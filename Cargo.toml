@@ -1,9 +1,9 @@
 [package]
 name = "teatime"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["John Baublitz <john.baublitz@threatstack.com>"]
 description = "Default trait implementations and data types for implementing HTTP API clients"
-repository = "https://github.com/threatstack/teapit"
+repository = "https://github.com/threatstack/teatime"
 keywords = ["api", "http", "vault", "sensu", "gitlab"]
 license = "BSD-3-Clause"
 include = [
