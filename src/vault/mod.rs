@@ -52,7 +52,7 @@ impl<'a> ApiClient<'a, SerdeValue, Value> for VaultClient {
     }
 
     fn set_params(&mut self, params: Option<&Self::Params>) -> Result<()> {
-        if let Some(ref mut request) = self.get_request() {
+        if let Some(ref mut request) = self.request {
             if let Some(ref t) = self.token {
                 let vault_token = XVaultToken(t.clone());
                 request.headers_mut().set::<XVaultToken>(vault_token);
