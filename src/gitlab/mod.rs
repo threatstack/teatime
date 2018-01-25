@@ -3,12 +3,8 @@ use std::fmt;
 use std::collections::HashMap;
 
 use serde_json::{Value,Map};
-use hyper::{self,Client,Request,Method,Response};
-use hyper::client::HttpConnector;
+use hyper::{self,Request,Response};
 use hyper::header::{self,Header,Raw,ContentType,Authorization,Bearer};
-use hyper_tls::HttpsConnector;
-use tokio_core::reactor::Core;
-use url::Url;
 
 use *;
 
@@ -46,7 +42,7 @@ pub trait HasNextLink {
     /// True if there is another page available
     fn has_next(&self) -> bool;
     /// Get URL of next page
-    fn next(&self) -> Option<Url>;
+    fn next(&self) -> Option<Uri>;
 }
 
 impl<'a> HasNextLink for Option<&'a Link> {
@@ -57,10 +53,10 @@ impl<'a> HasNextLink for Option<&'a Link> {
         }
     }
 
-    fn next(&self) -> Option<Url> {
+    fn next(&self) -> Option<Uri> {
         match *self {
             Some(ref l) => match l.next {
-                Some(ref n) => Url::parse(n.as_str()).ok(),
+                Some(ref n) => n.parse::<Uri>().ok(),
                 _ => None,
             },
             _ => None,
@@ -94,73 +90,62 @@ impl Header for Link {
         })
     }
 
-    fn fmt_header(&self, f: &mut header::Formatter) -> fmt::Result {
-        let _ = f;
-        unimplemented!()
+    fn fmt_header(&self, _f: &mut header::Formatter) -> fmt::Result {
+        Ok(())
     }
 }
 
 /// Gitlab API client
 pub struct GitlabClient {
-    request: Option<Request>,
-    host_url: Url,
+    base_uri: Uri,
     token: Option<String>,
-    core: Core,
-    client: Client<HttpsConnector<HttpConnector>>,
+    client: SimpleHttpClient,
 }
 
 impl<'a> GitlabClient {
     /// Create a new Gitlab API client
-    pub fn new(host_url: String) -> Result<Self> {
-        let (client, core) = try!(<Self as ApiClient>::create_https_client());
+    pub fn new(base_uri: String) -> Result<Self> {
         Ok(GitlabClient{
-            request: None,
             token: None,
-            host_url: try!(Url::parse(host_url.as_str())),
-            core,
-            client,
+            base_uri: base_uri.parse::<Uri>()?,
+            client: SimpleHttpClient::new()?,
         })
     }
 }
 
-impl<'a> ApiClient<'a, SerdeValue, Value> for GitlabClient {
+impl ApiClient<SimpleHttpClient> for GitlabClient {
     type Params = JsonParams;
 
-    fn request_init<T>(&mut self, method: Method, u: T) -> Result<()> where T: Into<Result<Uri>> {
-        let uri = u.into()?;
-        self.request = Some(Request::new(method, uri));
-        Ok(())
+    fn base_uri(&self) -> &Uri {
+        &self.base_uri
     }
 
-    fn get_api_url(&self) -> Url {
-        self.host_url.clone()
+    fn http_client(&self) -> &SimpleHttpClient {
+        &self.client
     }
 
-    fn get_hyper_client(&mut self) -> &mut Client<HttpsConnector<HttpConnector>> {
+    fn http_client_mut(&mut self) -> &mut SimpleHttpClient {
         &mut self.client
     }
 
-    fn get_core_mut(&mut self) -> &mut Core {
-        &mut self.core
-    }
-
-    fn set_params(&mut self, params: Option<&Self::Params>) -> Result<()> {
-        if let Some(ref mut req) = self.request {
-            if let Some(ps) = params {
-                req.set_body(ps.to_string())
-            }
-            req.headers_mut().set(ContentType::json());
-            if let Some(ref t) = self.token {
-                req.headers_mut().set(Authorization(Bearer{ token: t.clone() }));
-            }
-            Ok(())
-        } else {
-            Err(ClientError::new("Request not initialized"))
+    fn set_request_attributes(request: &mut Request, params: Option<Self::Params>) -> Result<()> {
+        if let Some(ps) = params {
+            request.set_body(ps.to_string())
         }
+        request.headers_mut().set(ContentType::json());
+        Ok(())
     }
 
-    fn get_request(&mut self) -> Option<Request> {
-        self.request.take()
+    fn set_api_headers(&mut self) -> Result<()> {
+        let token = match self.token {
+            Some(ref t) => t.clone(),
+            None => {
+                return Err(ClientError::new("Failed to set auth token for Vault - \
+                                            no auth token provided"));
+            }
+        };
+        self.http_client_mut().set_request_header(Authorization(Bearer{ token }))?;
+        Ok(())
     }
 
     fn login(&mut self, creds: &ApiCredentials) -> Result<()> {
@@ -170,12 +155,11 @@ impl<'a> ApiClient<'a, SerdeValue, Value> for GitlabClient {
                 json_map.insert("grant_type".to_string(), Value::from("password"));
                 json_map.insert("username".to_string(), Value::from(user.clone()));
                 json_map.insert("password".to_string(), Value::from(pass.clone()));
-                let origin = self.get_api_url().origin().ascii_serialization();
-                let target = RequestTarget::from(origin.as_str()) + "/oauth/token";
-                let json = try!(self.api_request(Method::Post, target?,
-                                                 Some(&JsonParams::from(json_map))));
-                let token_json = try!(json.get("access_token")
-                                 .ok_or(ClientError::new("Could not log in with given username and password")))
+                let uri = (self.base_uri.to_string() + "/oauth/token").parse::<Uri>()?;
+                let json = <Self as JsonApiClient<SimpleHttpClient>>::request_json(self, Method::Post, uri,
+                    Some(JsonParams::from(json_map)))?;
+                let token_json = json.get("access_token")
+                                 .ok_or(ClientError::new("Could not log in with given username and password"))?
                                  .as_str().map(|x| { x.to_string() });
                 Ok(token_json)
             };
@@ -197,9 +181,9 @@ impl<'a> ApiClient<'a, SerdeValue, Value> for GitlabClient {
     }
 }
 
-impl JsonApiClient for GitlabClient {
-    fn json_api_next_page_url(&mut self, resp: &Response)
-                              -> Result<Option<Url>> {
+impl JsonApiClient<SimpleHttpClient> for GitlabClient {
+    fn next_page_uri(&mut self, resp: &Response)
+                     -> Result<Option<Uri>> {
         let link_option = resp.headers().get::<Link>();
         Ok(link_option.next())
     }
