@@ -30,7 +30,6 @@
 //! data structures defined in `lib.rs` as these will outline parameter types,
 //! return types and required implementation bits.
 
-#![feature(associated_type_defaults)]
 #![deny(missing_docs)]
 
 extern crate futures;
