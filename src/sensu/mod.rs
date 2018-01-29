@@ -52,3 +52,9 @@ impl ApiClient<SimpleHttpClient> for SensuClient {
         Ok(())
     }
 }
+
+impl JsonApiClient<SimpleHttpClient> for SensuClient {
+    fn next_page_uri(&mut self, _resp: &Response) -> Result<Option<Uri>> {
+        Ok(None)
+    }
+}
