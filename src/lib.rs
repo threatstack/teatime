@@ -63,6 +63,8 @@ use std::error::Error;
 use std::io;
 use std::num;
 use std::fmt::{self,Formatter,Display};
+use std::result;
+use std::str;
 
 use serde_json::{Value,Map};
 use hyper::{Client,Method,Request,Response,Chunk,Uri};
@@ -197,7 +199,7 @@ pub trait HttpClient {
                 ));
             },
         };
-        let https_conn = try!(HttpsConnector::new(threads, &core.handle()));
+        let https_conn = HttpsConnector::new(threads, &core.handle())?;
         let client = Client::configure().connector(https_conn).build(&core.handle());
         Ok((client, core))
     }
@@ -213,13 +215,13 @@ pub trait HttpClient {
     /// Make HTTP request
     fn make_request(&mut self) -> Result<()>;
     /// Evaluate a `hyper` future
-    fn evaluate_future<F>(&mut self, future: F) -> Result<F::Item> where F: Future;
+    fn evaluate_future<F>(&mut self, future: F) -> result::Result<F::Item, F::Error> where F: Future;
     /// Get complete HTTP response
     fn response(&mut self) -> Result<Response>;
 
     /// Convert `Response` object to a reassembled `Chunk` type
     fn response_to_body(&mut self, resp: Response) -> Result<Chunk> {
-        self.evaluate_future(resp.body().concat2())
+        self.evaluate_future(resp.body().concat2()).map_err(|e| ClientError::new(format!("{}", e)))
     }
 
     /// Get request response body only
@@ -281,8 +283,8 @@ impl HttpClient for SimpleHttpClient {
         }
     }
 
-    fn evaluate_future<F>(&mut self, future: F) -> Result<F::Item> where F: Future {
-        self.core.run(future).or_else(|_e| { Err(ClientError::new("Failed to evalutate future")) })
+    fn evaluate_future<F>(&mut self, future: F) -> result::Result<F::Item, F::Error> where F: Future {
+        self.core.run(future)
     }
 
     fn response(&mut self) -> Result<Response> {
@@ -317,7 +319,15 @@ pub trait ApiClient<HTTP> where HTTP: ?Sized + HttpClient {
     fn request(&mut self, method: Method, uri: Uri, params: Option<Self::Params>) -> Result<Response> {
         let is_absolute_uri = uri.is_absolute();
         let full_uri = if !is_absolute_uri {
-            let uri_concat = self.base_uri().to_string() + uri.as_ref();
+            let mut no_leading_slash_uri = uri.as_ref();
+            if let "/" = &no_leading_slash_uri[..1] {
+                no_leading_slash_uri = &no_leading_slash_uri[1..];
+            }
+            let mut base_uri = self.base_uri().to_string();
+            if !base_uri.ends_with("/") {
+                base_uri.push('/');
+            }
+            let uri_concat = base_uri + no_leading_slash_uri;
             uri_concat.parse::<Uri>()?
         } else {
             uri
@@ -337,7 +347,7 @@ pub trait ApiClient<HTTP> where HTTP: ?Sized + HttpClient {
     /// Make API request and get `Chunk`
     fn request_to_response_body(&mut self, method: Method, uri: Uri, params: Option<Self::Params>) -> Result<Chunk> {
         let response = self.request(method, uri, params)?;
-        self.http_client_mut().evaluate_future(response.body().concat2())
+        self.http_client_mut().response_to_body(response)
     }
 }
 
@@ -377,6 +387,12 @@ pub trait JsonApiClient<HTTP>: ApiClient<HTTP> where HTTP: HttpClient {
     /// Convert a response body directly to JSON
     fn response_to_json(&mut self, response: Response) -> Result<Value> {
         let chunk = self.http_client_mut().response_to_body(response)?;
-        Ok(serde_json::from_slice(&chunk)?)
+        serde_json::from_slice(&chunk).map_err(|_e| {
+            let string_body = match str::from_utf8(&chunk) {
+                Ok(s) => s,
+                _ => { return ClientError::new("API seems to have returned non-UTF8 garbage"); },
+            };
+            ClientError::new(format!("Failed to parse JSON: {}", string_body))
+        })
     }
 }
