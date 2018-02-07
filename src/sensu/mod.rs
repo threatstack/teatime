@@ -1,4 +1,4 @@
-use hyper::{Request,Uri};
+use hyper::{Uri};
 use hyper::header::{ContentType,ContentLength};
 
 use *;
@@ -20,8 +20,6 @@ impl SensuClient {
 }
 
 impl ApiClient<SimpleHttpClient> for SensuClient {
-    type Params = JsonParams;
-
     fn base_uri(&self) -> &Uri {
         &self.api_uri
     }
@@ -34,18 +32,21 @@ impl ApiClient<SimpleHttpClient> for SensuClient {
         &mut self.client
     }
 
-    fn set_request_attributes(request: &mut Request, params: Option<Self::Params>) -> Result<()> {
-        if let Some(ps) = params {
-            let request_body = ps.to_string();
-            request.headers_mut().set(ContentLength(request_body.len() as u64));
-            request.set_body(request_body);
-        }
-        Ok(())
-    }
+    fn request_future<B>(&mut self, method: Method, uri: Uri, body: Option<B>) -> Option<FutureResponse>
+            where B: ToString {
+        let body_len = match body {
+            Some(ref b) => b.to_string().len(),
+            None => 0,
+        };
 
-    fn set_api_headers(&mut self) -> Result<()> {
-        self.http_client_mut().set_request_header(ContentType::json())?;
-        Ok(())
+        let full_uri = self.full_uri(uri).ok()?;
+        let client = self.http_client_mut();
+        client.start_request(method, full_uri)
+            .add_header(ContentLength(body_len as u64)).add_header(ContentType::json());
+        if let Some(ref b) = body {
+            client.add_body(b.to_string());
+        }
+        client.make_request().future()
     }
 
     fn login(&mut self, _creds: &ApiCredentials) -> Result<()> {

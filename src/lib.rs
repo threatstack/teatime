@@ -1,19 +1,18 @@
 //! # teatime
-//! An abstraction library for simplifying REST API implementations
+//! A wrapper library for simplifying REST API implementations
 //!
 //! ## Motivation
 //! When writing tools in Rust that talk with REST API endpoints,
-//! there is often a lot of boilerplate code needed when using `hyper`
-//! for HTTP requests. Much of this has to do with writing code
-//! to handle futures, something that is not always transparent to
+//! there is often some boilerplate code needed when using `hyper`
+//! for HTTP API requests. Much of this has to do with writing code
+//! to handle futures and finding where some of the modification methods live
+//! for things like headers and request body, something that is not always transparent to
 //! programmers coming from an imperative language background. This
-//! library abstracts away the future handling and allows the user
-//! to define a struct, implement this trait for the struct,
-//! and then define methods for accessing the struct fields,
-//! setting parameters for the HTTP request, defining headers
-//! and other common REST API flows. All of the future handling is already
-//! implemented as well as some additional helpful flows for things like
-//! JSON API pagination.
+//! library abstracts away some of these details and allows the user
+//! to either ignore the details of future handling
+//! or optionally drop down to the future level, exposing a builder pattern
+//! for HTTP requests for API flows.  Additionally helpful actions like
+//! JSON API autopagination and HTTP body to JSON conversions are already implemented.
 //!
 //! ## Reference implementations
 //! There are three reference implementations included, one for Sensu,
@@ -22,11 +21,11 @@
 //! default implementations.
 //!
 //! ## Using teatime
-//! The bulk of teatime is driven through the `ApiClient` and `JsonApiClient`
+//! The bulk of teatime is driven through the `HttpClient`, `ApiClient` and `JsonApiClient`
 //! traits. There are additional data structures to help with type safety
 //! when dealing with REST APIs that have a very loose type model.
 //!
-//! See the documentation for `ApiClient` and `JsonApiClient` as well as all of
+//! See the documentation for `ApiClient` and `JsonApiClient as well as all of
 //! data structures defined in `lib.rs` as these will outline parameter types,
 //! return types and required implementation bits.
 
@@ -56,27 +55,22 @@ pub mod sensu;
 /// Vault API client
 #[cfg(feature = "vault")]
 pub mod vault;
-/// Methods for entering credentials interactively
-pub mod interactive;
 
 use std::error::Error;
-use std::io;
-use std::num;
 use std::fmt::{self,Formatter,Display};
+use std::io::{self,Write};
+use std::num;
 use std::result;
 use std::str;
 
 use serde_json::{Value,Map};
-use hyper::{Client,Method,Request,Response,Chunk,Uri};
+use hyper::{Client,Method,Request,Response,Uri};
 use hyper::client::{HttpConnector,FutureResponse};
 use hyper::header::Header;
 use hyper_tls::HttpsConnector;
 use tokio_core::reactor::Core;
 use futures::{Future,Stream};
 
-use interactive::interactive_text;
-
-#[macro_export]
 macro_rules! error_impl {
     ($error:ident, $( $from_error:path ),* ) => {
         /// Custom error type
@@ -112,20 +106,24 @@ macro_rules! error_impl {
     }
 }
 
-#[macro_export]
-macro_rules! pairs_to_params {
-    ( $hm:ident; $( $keys:tt => $vals:expr ),* ) => {
-        $(
-            $hm.insert($keys.to_string(), Value::from($vals.clone()));
-        )*
-    };
-}
-
 error_impl!(ClientError, serde_json::Error, hyper::Error, hyper::error::UriError,
             native_tls::Error, num::ParseIntError);
 
 /// Result with `Error` type defined
 pub type Result<T> = std::result::Result<T, ClientError>;
+
+/// Prompt for text echoed in the terminal - _do not use for sensitive data_
+pub fn interactive_text(prompt: &str) -> result::Result<String, io::Error> {
+    let stdin = io::stdin();
+    let mut stdout = io::stdout();
+    print!("{}", prompt);
+    try!(stdout.flush());
+    let mut line = String::new();
+    let line_len = try!(stdin.read_line(&mut line));
+    line.truncate(line_len - 1);
+
+    Ok(line)
+}
 
 /// An enum representing three types of credentials or no authentication
 #[derive(Debug,PartialEq,Eq)]
@@ -204,31 +202,21 @@ pub trait HttpClient {
         Ok((client, core))
     }
 
-    /// Initialize request
-    fn request_init(&mut self, Method, Uri) -> Result<()>;
-    /// Add request parameters and headers
-    fn request_attributes<T>(&mut self, Option<T::Params>) -> Result<()>
-        where T: ?Sized + ApiClient<Self>;
+    /// Create a hyper `Request` object
+    fn start_request(&mut self, Method, Uri) -> &mut Self;
+    /// Add request headers
+    fn add_header<H>(&mut self, H) -> &mut Self where H: Header;
     /// Set an individual header in the HTTP request
-    fn set_request_header<H>(&mut self, H) -> Result<()>
-        where H: Header;
+    fn add_body<S>(&mut self, S) -> &mut Self where S: ToString;
     /// Make HTTP request
-    fn make_request(&mut self) -> Result<()>;
-    /// Evaluate a `hyper` future
-    fn evaluate_future<F>(&mut self, future: F) -> result::Result<F::Item, F::Error> where F: Future;
+    fn make_request(&mut self) -> &mut Self;
     /// Get complete HTTP response
     fn response(&mut self) -> Result<Response>;
-
-    /// Convert `Response` object to a reassembled `Chunk` type
-    fn response_to_body(&mut self, resp: Response) -> Result<Chunk> {
-        self.evaluate_future(resp.body().concat2()).map_err(|e| ClientError::new(format!("{}", e)))
-    }
-
-    /// Get request response body only
-    fn body(&mut self) -> Result<Chunk> {
-        let resp = self.response()?;
-        self.response_to_body(resp)
-    }
+    /// Get `Response` future
+    fn future(&mut self) -> Option<FutureResponse>;
+    /// Evaluate a future
+    fn evaluate_future<F>(&mut self, future: F)
+        -> result::Result<F::Item, F::Error> where F: Future;
 }
 
 /// Reference implementation of `HttpClient` trait - should be good enough for most use cases
@@ -248,75 +236,51 @@ impl SimpleHttpClient {
 }
 
 impl HttpClient for SimpleHttpClient {
-    fn request_init(&mut self, method: Method, uri: Uri) -> Result<()> {
+    fn start_request(&mut self, method: Method, uri: Uri) -> &mut Self {
         self.request = Some(Request::new(method, uri));
-        Ok(())
+        self
     }
 
-    fn request_attributes<T>(&mut self, params: Option<T::Params>) -> Result<()>
-            where T: ?Sized + ApiClient<Self> {
-        if let Some(ref mut req) = self.request {
-            if params.is_some() {
-                T::set_request_attributes(req, params)?;
-            }
-            Ok(())
-        } else {
-            Err(ClientError::new("Request not initialized, cannot set parameters"))
-        }
+    fn add_header<H>(&mut self, header: H) -> &mut Self where H: Header {
+        self.request.as_mut().map(|ref mut req| req.headers_mut().set::<H>(header));
+        self
     }
 
-    fn set_request_header<H>(&mut self, header: H) -> Result<()> where H: Header {
-        if let Some(ref mut req) = self.request {
-            req.headers_mut().set(header);
-            Ok(())
-        } else {
-            Err(ClientError::new("Request not initialized, cannot set header"))
-        }
+    fn add_body<S>(&mut self, body: S) -> &mut Self where S: ToString {
+        self.request.as_mut().map(|ref mut req| req.set_body(body.to_string()));
+        self
     }
 
-    fn make_request(&mut self) -> Result<()> {
-        if let Some(req) = self.request.take() {
-            self.response_fut = Some(self.https_client.request(req));
-            Ok(())
-        } else {
-            Err(ClientError::new("Request not initialized, cannot make request"))
-        }
-    }
-
-    fn evaluate_future<F>(&mut self, future: F) -> result::Result<F::Item, F::Error> where F: Future {
-        self.core.run(future)
+    fn make_request(&mut self) -> &mut Self {
+        let request = self.request.take();
+        self.response_fut = request.map(|req| self.https_client.request(req));
+        self
     }
 
     fn response(&mut self) -> Result<Response> {
-        match self.response_fut.take() {
-            Some(fut) => Ok(self.evaluate_future(fut)?),
-            None => Err(ClientError::new("No request sent, get response")),
-        }
+        let response_fut = self.response_fut.take().ok_or(ClientError::new("No request made"))?;
+        self.evaluate_future(response_fut).map_err(|e| {
+            ClientError::new(e.description())
+        })
     }
+
+    fn future(&mut self) -> Option<FutureResponse> {
+        self.response_fut.take()
+    }
+
+    fn evaluate_future<F>(&mut self, future: F) -> result::Result<F::Item, F::Error>
+            where F: Future {
+        self.core.run(future)
+    }
+
 }
 
-/// Provides default implementations for handling future logic in `hyper` request and response flows
+/// Provides some default implementations for handling API level requests and flows
 pub trait ApiClient<HTTP> where HTTP: ?Sized + HttpClient {
-    /// API parameter type that can be anything that can be represented as a `String`
-    type Params: ToString + Clone;
-
     /// Get base API URI to which all relative endpoint requests will be appended
     fn base_uri(&self) -> &Uri;
-    /// Get underlying HTTP client
-    fn http_client(&self) -> &HTTP;
-    /// Get underlying HTTP client mutably
-    fn http_client_mut(&mut self) -> &mut HTTP;
-    /// Set the `Request` object attributes directly such as the request body
-    /// - defined at the API level so that `SimpleHttpClient` can work with any API
-    fn set_request_attributes(&mut Request, Option<Self::Params>) -> Result<()>;
-    /// Set the API headers most likely using `SimpleHttpClient`'s `set_request_header()` API -
-    /// mainly intended for headers like auth-related tokens
-    fn set_api_headers(&mut self) -> Result<()>;
-    /// Define the login flow for the API - may simply return `Ok(())` for unauthenticated APIs
-    fn login(&mut self, &ApiCredentials) -> Result<()>;
-
-    /// Make API request and get `Response`
-    fn request(&mut self, method: Method, uri: Uri, params: Option<Self::Params>) -> Result<Response> {
+    /// Generate full URI for requests
+    fn full_uri(&self, uri: Uri) -> Result<Uri> {
         let is_absolute_uri = uri.is_absolute();
         let full_uri = if !is_absolute_uri {
             let mut no_leading_slash_uri = uri.as_ref();
@@ -332,26 +296,31 @@ pub trait ApiClient<HTTP> where HTTP: ?Sized + HttpClient {
         } else {
             uri
         };
-        // Used in an inner block due to mutability requirements
-        {
-            let http_client = self.http_client_mut();
-            http_client.request_init(method, full_uri)?;
-            http_client.request_attributes::<Self>(params)?;
-        }
-        self.set_api_headers()?;
-        let http_client = self.http_client_mut();
-        http_client.make_request()?;
-        http_client.response()
+        Ok(full_uri)
     }
+    /// Get underlying HTTP client
+    fn http_client(&self) -> &HTTP;
+    /// Get underlying HTTP client mutably
+    fn http_client_mut(&mut self) -> &mut HTTP;
+    /// Implement authentication here
+    fn login(&mut self, &ApiCredentials) -> Result<()>;
 
-    /// Make API request and get `Chunk`
-    fn request_to_response_body(&mut self, method: Method, uri: Uri, params: Option<Self::Params>) -> Result<Chunk> {
-        let response = self.request(method, uri, params)?;
-        self.http_client_mut().response_to_body(response)
+    /// Make an API request and resolve the future to a response
+    fn request<B>(&mut self, method: Method, uri: Uri, body: Option<B>) -> Result<Response>
+            where B: ToString {
+        let future = self.request_future(method, uri, body).ok_or(ClientError::new("No request made"))?;
+        self.response_future(future)
+    }
+    /// Make an API request and return the future
+    fn request_future<B>(&mut self, method: Method, uri: Uri, body: Option<B>) -> Option<FutureResponse> where B: ToString;
+    /// Resolve the future to a response
+    fn response_future(&mut self, f: FutureResponse) -> Result<Response> {
+        Ok(self.http_client_mut().evaluate_future(f)?)
     }
 }
 
-/// Provides a default implementation for pagination in JSON API flows
+/// Provides a default implementation for pagination in JSON API flows and automatic conversion from
+/// response body to JSON
 pub trait JsonApiClient<HTTP>: ApiClient<HTTP> where HTTP: HttpClient {
     /// Retrieves a URL for the request to get the next page in
     /// a paginated response
@@ -359,34 +328,40 @@ pub trait JsonApiClient<HTTP>: ApiClient<HTTP> where HTTP: HttpClient {
                          -> Result<Option<Uri>>;
 
     /// Default implementation to make an API request and convert the response to JSON
-    fn request_json(&mut self, method: Method, uri: Uri, params: Option<Self::Params>) -> Result<Value> {
-        let response = self.request(method, uri, params)?;
+    fn request_json<B>(&mut self, method: Method, uri: Uri,
+                       body: Option<B>) -> Result<Value>
+                       where B: ToString {
+        let response = self.request(method, uri, body)?;
+        self.response_to_json(response)
+    }
+
+    /// Resolve the future to a response and convert to JSON
+    fn response_future_json(&mut self, fut: FutureResponse) -> Result<Value> {
+        let response = self.response_future(fut)?;
         self.response_to_json(response)
     }
 
     /// Default implementation for handling pagination in JSON API contexts that will retrieve and
-    /// parse all pages - *should be overriden if page-by-page behavior is required*
-    fn autopagination<T>(&mut self, method: Method, target: Uri,
-                         params: Option<<Self as ApiClient<HTTP>>::Params>)
-                         -> Result<Value> {
+    /// parse all pages - *should not be used if page-by-page behavior is required*
+    fn autopagination<B>(&mut self, method: Method, uri: Uri, body: Option<B>)
+                         -> Result<Value> where B: ToString + Clone {
         let mut vec: Vec<Value> = Vec::new();
         let mut response = <Self as ApiClient<HTTP>>::request(
-            self, method.clone(), target.clone(), params.clone()
+            self, method.clone(), uri.clone(), body.clone()
         )?;
         while let Some(page) = try!(self.next_page_uri(&response)) {
             let json = self.response_to_json(response)?;
             vec.push(json);
-            response = <Self as ApiClient<HTTP>>::request(self, method.clone(), page, params.clone())?;
+            response = <Self as ApiClient<HTTP>>::request(self, method.clone(), page, body.clone())?;
         }
-        let chunk = self.http_client_mut().response_to_body(response)?;
-        let json = serde_json::from_slice(&chunk)?;
+        let json = self.response_to_json(response)?;
         vec.push(json);
         Ok(Value::Array(vec))
     }
 
     /// Convert a response body directly to JSON
     fn response_to_json(&mut self, response: Response) -> Result<Value> {
-        let chunk = self.http_client_mut().response_to_body(response)?;
+        let chunk = self.http_client_mut().evaluate_future(response.body().concat2())?;
         serde_json::from_slice(&chunk).map_err(|_e| {
             let string_body = match str::from_utf8(&chunk) {
                 Ok(s) => s,
