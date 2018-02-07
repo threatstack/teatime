@@ -1,5 +1,6 @@
+use hyper::{Response,Method};
+use hyper::header::ContentType;
 use serde_json::{Value,Map};
-use hyper::{Request,Response,Method};
 
 use *;
 
@@ -24,8 +25,6 @@ impl VaultClient {
 }
 
 impl ApiClient<SimpleHttpClient> for VaultClient {
-    type Params = JsonParams;
-
     fn base_uri(&self) -> &Uri {
         &self.api_uri
     }
@@ -38,23 +37,19 @@ impl ApiClient<SimpleHttpClient> for VaultClient {
         &mut self.http_client
     }
 
-    fn set_request_attributes(request: &mut Request, params: Option<Self::Params>) -> Result<()> {
-        if let Some(ps) = params {
-            request.set_body(ps.to_string());
+    fn request_future<B>(&mut self, method: Method, uri: Uri, body: Option<B>)
+            -> Option<FutureResponse> where B: ToString {
+        let token = self.token.clone();
+        let full_uri = self.full_uri(uri).ok()?;
+        let client = self.http_client_mut();
+        client.start_request(method, full_uri).add_header(ContentType::json());
+        if let Some(ref t) = token {
+            client.add_header(XVaultToken(t.clone()));
         }
-        Ok(())
-    }
-
-    fn set_api_headers(&mut self) -> Result<()> {
-        let token = match self.token {
-            Some(ref t) => t.clone(),
-            None => {
-                return Err(ClientError::new("Failed to set auth token for Vault - \
-                                            no auth token provided"));
-            }
-        };
-        self.http_client_mut().set_request_header(XVaultToken(token))?;
-        Ok(())
+        if let Some(b) = body {
+            client.add_body(b.to_string());
+        }
+        client.make_request().future()
     }
 
     fn login(&mut self, creds: &ApiCredentials) -> Result<()> {
