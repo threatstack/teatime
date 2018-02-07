@@ -1,19 +1,18 @@
 //! # teatime
-//! An abstraction library for simplifying REST API implementations
+//! A wrapper library for simplifying REST API implementations
 //!
 //! ## Motivation
 //! When writing tools in Rust that talk with REST API endpoints,
-//! there is often a lot of boilerplate code needed when using `hyper`
-//! for HTTP requests. Much of this has to do with writing code
-//! to handle futures, something that is not always transparent to
+//! there is often some boilerplate code needed when using `hyper`
+//! for HTTP API requests. Much of this has to do with writing code
+//! to handle futures and finding where some of the modification methods live
+//! for things like headers and request body, something that is not always transparent to
 //! programmers coming from an imperative language background. This
-//! library abstracts away the future handling and allows the user
-//! to define a struct, implement this trait for the struct,
-//! and then define methods for accessing the struct fields,
-//! setting parameters for the HTTP request, defining headers
-//! and other common REST API flows. All of the future handling is already
-//! implemented as well as some additional helpful flows for things like
-//! JSON API pagination.
+//! library abstracts away some of these details and allows the user
+//! to either ignore the details of future handling
+//! or optionally drop down to the future level, exposing a builder pattern
+//! for HTTP requests for API flows.  Additionally helpful actions like
+//! JSON API autopagination and HTTP body to JSON conversions are already implemented.
 //!
 //! ## Reference implementations
 //! There are three reference implementations included, one for Sensu,
@@ -22,11 +21,11 @@
 //! default implementations.
 //!
 //! ## Using teatime
-//! The bulk of teatime is driven through the `ApiClient` and `JsonApiClient`
+//! The bulk of teatime is driven through the `HttpClient`, `ApiClient` and `JsonApiClient`
 //! traits. There are additional data structures to help with type safety
 //! when dealing with REST APIs that have a very loose type model.
 //!
-//! See the documentation for `ApiClient` and `JsonApiClient` as well as all of
+//! See the documentation for `ApiClient` and `JsonApiClient as well as all of
 //! data structures defined in `lib.rs` as these will outline parameter types,
 //! return types and required implementation bits.
 
@@ -276,8 +275,7 @@ impl HttpClient for SimpleHttpClient {
 
 }
 
-/// Provides default implementations for handling future logic in `hyper` request
-/// and response flows
+/// Provides some default implementations for handling API level requests and flows
 pub trait ApiClient<HTTP> where HTTP: ?Sized + HttpClient {
     /// Get base API URI to which all relative endpoint requests will be appended
     fn base_uri(&self) -> &Uri;
@@ -321,7 +319,8 @@ pub trait ApiClient<HTTP> where HTTP: ?Sized + HttpClient {
     }
 }
 
-/// Provides a default implementation for pagination in JSON API flows
+/// Provides a default implementation for pagination in JSON API flows and automatic conversion from
+/// response body to JSON
 pub trait JsonApiClient<HTTP>: ApiClient<HTTP> where HTTP: HttpClient {
     /// Retrieves a URL for the request to get the next page in
     /// a paginated response
@@ -343,7 +342,7 @@ pub trait JsonApiClient<HTTP>: ApiClient<HTTP> where HTTP: HttpClient {
     }
 
     /// Default implementation for handling pagination in JSON API contexts that will retrieve and
-    /// parse all pages - *should be overriden if page-by-page behavior is required*
+    /// parse all pages - *should not be used if page-by-page behavior is required*
     fn autopagination<B>(&mut self, method: Method, uri: Uri, body: Option<B>)
                          -> Result<Value> where B: ToString + Clone {
         let mut vec: Vec<Value> = Vec::new();
