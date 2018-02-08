@@ -25,9 +25,21 @@
 //! traits. There are additional data structures to help with type safety
 //! when dealing with REST APIs that have a very loose type model.
 //!
-//! See the documentation for `ApiClient` and `JsonApiClient as well as all of
+//! See the documentation for `ApiClient` and `JsonApiClient` as well as all of
 //! data structures defined in `lib.rs` as these will outline parameter types,
 //! return types and required implementation bits.
+//!
+//! ## Traditional request-response flows vs. future-based flows
+//!
+//! Once the `ApiClient` trait is implemented, an API can either be made through the `request`
+//! method for a hyper `Response` type or `request_json` for automatic conversion of the 
+//! response body to JSON.
+//!
+//! For cases where futures are desirable, there are two method calls for the request-response
+//! flow. The first is `request_future`. This will return a future which can be left as is while
+//! other work is done. This is the same for both `Response` and JSON flows. The resolution
+//! functions that resolve to `Response`s and JSON objects are `response_future`
+//! and `response_future_json` respectively.
 
 #![deny(missing_docs)]
 
