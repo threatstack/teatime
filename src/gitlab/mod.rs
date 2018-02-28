@@ -135,7 +135,7 @@ impl ApiClient<SimpleHttpClient> for GitlabClient {
                 json_map.insert("password".to_string(), Value::from(pass.clone()));
                 let uri = (self.base_uri.to_string() + "/oauth/token").parse::<Uri>()?;
                 let json = <Self as JsonApiClient<SimpleHttpClient>>::request_json(self, Method::Post, uri,
-                    Some(JsonParams::from(json_map)))?;
+                    Some(Value::from(json_map)))?;
                 let token_json = json.get("access_token")
                                  .ok_or(ClientError::new("Could not log in with given username and password"))?
                                  .as_str().map(|x| { x.to_string() });
