@@ -75,7 +75,7 @@ use std::num;
 use std::result;
 use std::str;
 
-use serde_json::{Value,Map};
+use serde_json::Value;
 use hyper::{Client,Method,Request,Response,Uri};
 use hyper::client::{HttpConnector,FutureResponse};
 use hyper::header::Header;
@@ -179,22 +179,6 @@ impl ApiCredentials {
 
 /// Type alias for HTTPS client
 pub type HttpsClient = Client<HttpsConnector<HttpConnector>>;
-
-/// A struct to simplify JSON parameter handling for APIs that accept parameters as JSON objects
-#[derive(Debug,Clone)]
-pub struct JsonParams(Map<String, Value>);
-
-impl Display for JsonParams {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", Value::from(self.0.clone()).to_string())
-    }
-}
-
-impl From<Map<String, Value>> for JsonParams {
-    fn from(v: Map<String, Value>) -> Self {
-        JsonParams(v)
-    }
-}
 
 /// Methods defining low-level HTTP handling
 pub trait HttpClient {

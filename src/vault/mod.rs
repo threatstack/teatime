@@ -68,7 +68,7 @@ impl ApiClient<SimpleHttpClient> for VaultClient {
         let uri = format!("{}/v1/auth/ldap/login/{}", self.api_uri, username).parse::<Uri>()?;
         let token_payload = self.request_json(
             Method::Post, uri,
-            Some(JsonParams::from(args))
+            Some(Value::from(args))
         )?;
         let token = try!(token_payload.get("auth").and_then(|x| x.get("client_token"))
                          .and_then(|x| x.as_str())
