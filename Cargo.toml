@@ -1,6 +1,6 @@
 [package]
 name = "teatime"
-version = "0.4.0"
+version = "0.4.1"
 authors = ["John Baublitz <john.baublitz@threatstack.com>"]
 description = "Default trait implementations and data types for implementing HTTP API clients"
 repository = "https://github.com/threatstack/teatime"

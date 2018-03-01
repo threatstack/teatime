@@ -28,6 +28,8 @@ named!(parse_link_header<&str, HashMap<String, String> >,
     )
 );
 
+header! { #[allow(missing_docs)] (PrivateToken, "Private-Token") => [String] }
+
 /// Struct representing the pagination header in Gitlab
 #[derive(Clone)]
 pub struct Link {
@@ -95,10 +97,19 @@ impl Header for Link {
     }
 }
 
+/// Support OAuth tokens and personal access tokens in Gitlab
+#[derive(Clone)]
+pub enum TokenType {
+    /// OAuth token
+    Oauth(String),
+    /// Personal access tokens in Gitlab
+    PersonalAccess(String),
+}
+
 /// Gitlab API client
 pub struct GitlabClient {
     base_uri: Uri,
-    token: Option<String>,
+    token: Option<TokenType>,
     client: SimpleHttpClient,
 }
 
@@ -133,7 +144,12 @@ impl ApiClient<SimpleHttpClient> for GitlabClient {
                 json_map.insert("grant_type".to_string(), Value::from("password"));
                 json_map.insert("username".to_string(), Value::from(user.clone()));
                 json_map.insert("password".to_string(), Value::from(pass.clone()));
-                let uri = (self.base_uri.to_string() + "/oauth/token").parse::<Uri>()?;
+                let mut host_uri = format!("{}://{}", self.base_uri.scheme().ok_or(ClientError::new("Invalid base URI"))?,
+                                           self.base_uri.authority().ok_or(ClientError::new("Invalid base URI"))?);
+                if host_uri.ends_with('/') {
+                    let _ = host_uri.pop();
+                }
+                let uri = (host_uri + "/oauth/token").parse::<Uri>()?;
                 let json = <Self as JsonApiClient<SimpleHttpClient>>::request_json(self, Method::Post, uri,
                     Some(Value::from(json_map)))?;
                 let token_json = json.get("access_token")
@@ -145,12 +161,12 @@ impl ApiClient<SimpleHttpClient> for GitlabClient {
             match *creds {
                 ApiCredentials::NoAuth => None,
                 ApiCredentials::UserPass(ref user, ref pass) => {
-                    try!(auth(user, pass))
+                    try!(auth(user, pass)).map(TokenType::Oauth)
                 },
                 ApiCredentials::UserPassTwoFactor(ref user, ref pass, _) => {
-                    try!(auth(user, pass))
+                    try!(auth(user, pass)).map(TokenType::Oauth)
                 },
-                ApiCredentials::ApiKey(ref key) => Some(key.clone()),
+                ApiCredentials::ApiKey(ref key) => Some(TokenType::PersonalAccess(key.clone())),
             }
         };
 
@@ -164,8 +180,10 @@ impl ApiClient<SimpleHttpClient> for GitlabClient {
         let full_uri = self.full_uri(uri).ok()?;
         let client = self.http_client_mut();
         client.start_request(method, full_uri).add_header(ContentType::json());
-        if let Some(ref t) = token {
+        if let Some(TokenType::Oauth(ref t)) = token {
             client.add_header(Authorization(Bearer { token: t.clone() }));
+        } else if let Some(TokenType::PersonalAccess(ref t)) = token {
+            client.add_header(PrivateToken(t.clone()));
         }
         if let Some(b) = body {
             client.add_body(b.to_string());
