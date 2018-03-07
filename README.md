@@ -4,7 +4,7 @@
 A library to make implementing REST API tools easier in Rust
 
 # Documentation
-Reference and usage documentation is [here](https://docs.rs/teatime/0.4.1/teatime/).
+Reference and usage documentation is [here](https://docs.rs/teatime/0.4.2/teatime/).
 
 # Contibuting
 For contribution guidelines, please click [here](CONTRIBUTING.md)
