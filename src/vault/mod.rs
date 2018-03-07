@@ -65,7 +65,7 @@ impl ApiClient<SimpleHttpClient> for VaultClient {
         } else {
             return Err(ClientError::new("Invalid credentials provided for login"));
         }
-        let uri = format!("{}/v1/auth/ldap/login/{}", self.api_uri, username).parse::<Uri>()?;
+        let uri = format!("/v1/auth/ldap/login/{}", username).parse::<Uri>()?;
         let token_payload = self.request_json(
             Method::Post, uri,
             Some(Value::from(args))
