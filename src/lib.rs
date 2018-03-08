@@ -341,18 +341,25 @@ pub trait JsonApiClient<HTTP>: ApiClient<HTTP> where HTTP: HttpClient {
     /// parse all pages - *should not be used if page-by-page behavior is required*
     fn autopagination<B>(&mut self, method: Method, uri: Uri, body: Option<B>)
                          -> Result<Value> where B: ToString + Clone {
+        let add_json = |vec: &mut Vec<Value>, value: Value| {
+            match value {
+                Value::Array(v) => { vec.extend(v.into_iter()); },
+                any => { vec.push(any); }
+            }
+        };
+
         let mut vec: Vec<Value> = Vec::new();
         let mut response = <Self as ApiClient<HTTP>>::request(
             self, method.clone(), uri.clone(), body.clone()
         )?;
         while let Some(page) = try!(self.next_page_uri(&response)) {
             let json = self.response_to_json(response)?;
-            vec.push(json);
+            add_json(&mut vec, json);
             response = <Self as ApiClient<HTTP>>::request(self, method.clone(), page, body.clone())?;
         }
         let json = self.response_to_json(response)?;
-        vec.push(json);
-        Ok(Value::Array(vec))
+        add_json(&mut vec, json);
+        Ok(Value::from(vec))
     }
 
     /// Convert a response body directly to JSON
